@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Organic Model: Analysis & Strategy</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { 
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: #ffffff; 
+      padding: 24px; 
+      color: #0f172a;
+    }
+    @media (max-width: 640px) {
+      body { padding: 12px; }
+    }
+    code {
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 11px;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+  <script type="text/babel">
+    const { useState, useMemo } = React;
+
+const SECTIONS = ["overview", "lineage", "sources", "models", "issues", "patterns", "strategy"];
+const SECTION_LABELS = {
+  overview: "Overview",
+  lineage: "Lineage",
+  sources: "Data Sources",
+  models: "Model Inventory",
+  issues: "Issues (143)",
+  patterns: "Patterns",
+  strategy: "Rebuild Plan"
+};
+
+const SCOPE_COLORS = {
+  organic: { bg: "#dbeafe", border: "#3b82f6", text: "#1e40af", dot: "#3b82f6" },
+  paid: { bg: "#fef3c7", border: "#f59e0b", text: "#92400e", dot: "#f59e0b" },
+  shared: { bg: "#ede9fe", border: "#8b5cf6", text: "#5b21b6", dot: "#8b5cf6" }
+};
+
+const SEV = {
+  critical: { color: "#dc2626", bg: "#fef2f2", label: "Critical" },
+  high: { color: "#d97706", bg: "#fffbeb", label: "High" },
+  medium: { color: "#2563eb", bg: "#eff6ff", label: "Medium" },
+  low: { color: "#6b7280", bg: "#f9fafb", label: "Low" }
+};
+
+const ISSUES = [
+  { id: 2, sev: "critical", scope: "organic", models: ["bl_organic_performance_v3", "bl_organic_account_performance_v3", "ol_organic_account_metrics_v2", "ol_posts_v2"], desc: "BL v3 → OL v2 cross-version reference. Two BLs see different posts master" },
+  { id: 3, sev: "critical", scope: "organic", models: ["ol_posts_v3", "cl_google_sheets_media_data_attributes"], desc: "OL → CL layer skip (15+ cases). Architecture violation" },
+  { id: 14, sev: "critical", scope: "organic", models: ["il_tiktok_organic_media_classic_v3", "il_tiktok_organic_media_classic_v2"], desc: "TikTok v3 reads from v2. Deprecating v2 silently breaks v3" },
+  { id: 19, sev: "critical", scope: "organic", models: ["il_instagram_business_media_classic_v3", "il_tiktok_organic_media_classic_v3", "ol_post_organic_metrics_totals_v3"], desc: "v3 never-decrease silently masks data corrections. Undocumented behavior" },
+  { id: 54, sev: "critical", scope: "shared", models: ["cl_google_sheets_accounts", "cl_dim_campaign_objective_mapping", "cl_dim_conversion_goal_mapping"], desc: "Business mappings in uncontrolled Google Sheets. No version control, no tests" },
+  { id: 66, sev: "critical", scope: "organic", models: ["cl_facebook_pages_media_posts"], desc: "CL performing paid/organic business split. Architecture violation" },
+  { id: 67, sev: "critical", scope: "organic", models: ["cl_facebook_pages_media_posts"], desc: "bd_reach = total - organic. Mathematically wrong for unique reach" },
+  { id: 78, sev: "critical", scope: "organic", models: ["cl_tiktok_organic_media_performance"], desc: "TikTok report_date = DATE_SUB(CURRENT_DATE(), 1). Breaks backfills" },
+  { id: 83, sev: "critical", scope: "paid", models: ["cl_tiktok_ads_dimensions"], desc: "PII exposed (email, phone, address). Governance / privacy risk" },
+  { id: 96, sev: "critical", scope: "paid", models: ["cl_meta_ads_by_attribution_window"], desc: "VIEW with 30-source UNION ALL. Full scan on every downstream query" },
+  { id: 115, sev: "critical", scope: "paid", models: ["cl_google_ads_ad_stats"], desc: "clicks double output (link_clicks + clicks from same source). Double counting risk" },
+  { id: 116, sev: "critical", scope: "paid", models: ["cl_google_ads_ad_stats"], desc: "conversions AS purchases. Semantic error: conversions ≠ purchases" },
+  { id: 124, sev: "critical", scope: "paid", models: ["cl_pinterest_pin_promotion_report"], desc: "clicks double output (same pattern as #115). Double counting risk" },
+  { id: 128, sev: "critical", scope: "paid", models: ["cl_pinterest_pin_promotion_report"], desc: "Dedup ignores attribution window. Arbitrary metric selection" },
+  { id: 1, sev: "high", scope: "organic", models: ["il_instagram_business_media_classic_v2", "il_instagram_business_media_stories_v2", "il_tiktok_organic_media_classic_v2", "ol_posts_v2"], desc: "v2/v3 coexistence (4 pairs). Technical debt, confusing lineage" },
+  { id: 4, sev: "high", scope: "organic", models: ["ol_post_organic_metrics_totals_v3"], desc: "Materialization contradiction: table config but is_incremental() code" },
+  { id: 6, sev: "high", scope: "organic", models: ["ol_post_paid_metrics_totals_v3"], desc: "Hardcoded attribution_window and platform filters" },
+  { id: 8, sev: "high", scope: "paid", models: ["ol_ad_sets_supermetrics", "ol_ad_campaigns_supermetrics"], desc: "Meta migration hybrid IL/CL pattern. Business logic split" },
+  { id: 9, sev: "high", scope: "paid", models: ["ol_ads_supermetrics"], desc: "Business logic in OL (ad_type CASE WHEN with 20+ patterns)" },
+  { id: 11, sev: "high", scope: "shared", models: ["ol_platform_accounts", "ol_client_projects", "ol_clients", "cl_google_sheets_accounts"], desc: "Same CL read 3 times by 3 OL models. Single IL would consolidate" },
+  { id: 13, sev: "high", scope: "organic", models: ["ol_platform_accounts", "ol_client_projects", "ol_clients", "ol_ad_sets_supermetrics", "ol_ad_campaigns_supermetrics", "ol_daily_currency_exchange_rates"], desc: "Missing materialization (6 OL models)" },
+  { id: 15, sev: "high", scope: "organic", models: ["il_instagram_business_media_stories_v3", "il_instagram_business_media_classic_v3"], desc: "IL→IL dependency: stories refs classic for username lookup" },
+  { id: 16, sev: "high", scope: "organic", models: ["il_instagram_business_media_classic_v3", "ol_post_organic_metrics_totals_v3"], desc: "Never-decrease logic applied in BOTH IL and OL" },
+  { id: 17, sev: "high", scope: "organic", models: ["il_instagram_business_media_classic_v2", "ol_post_organic_metrics_daily_changes_v3"], desc: "Daily changes computed in two places (IL v2 + OL)" },
+  { id: 28, sev: "high", scope: "organic", models: ["il_linkedin_pages_media_posts"], desc: "LinkedIn uses v2-style IL (no never-decrease, daily changes in IL)" },
+  { id: 29, sev: "high", scope: "organic", models: ["cl_linkedin_pages_media_posts", "il_linkedin_pages_media_posts"], desc: "LinkedIn total_ prefix originates in CL, unlike other platforms" },
+  { id: 30, sev: "high", scope: "organic", models: ["il_linkedin_pages_account_basics", "il_linkedin_pages_account_followers", "ol_organic_account_metrics_v2"], desc: "LinkedIn has TWO account ILs. Requires FULL OUTER JOIN in OL" },
+  { id: 85, sev: "high", scope: "organic", models: ["cl_linkedin_pages_account_basics"], desc: "total_daily_*_from_posts prefix unique to LinkedIn CL" },
+  { id: 86, sev: "high", scope: "organic", models: ["cl_linkedin_pages_account_basics", "cl_linkedin_pages_account_followers", "cl_linkedin_pages_media_posts"], desc: "LinkedIn partition field inconsistency: report_date vs data_collected_date" },
+  { id: 87, sev: "high", scope: "organic", models: ["cl_linkedin_pages_account_followers"], desc: "followers_paid column dropped in CL. Information loss" },
+  { id: 88, sev: "high", scope: "organic", models: ["cl_linkedin_pages_account_followers"], desc: "data_source_name missing in followers CL. Multi-tenant traceability gap" },
+  { id: 89, sev: "high", scope: "organic", models: ["cl_linkedin_pages_media_posts"], desc: "engagement_rate = API passthrough. Other platforms compute in dbt" },
+  { id: 97, sev: "high", scope: "paid", models: ["cl_meta_ads_by_attribution_window"], desc: "Attribution window mapping hardcoded in CL Jinja dict" },
+  { id: 105, sev: "high", scope: "paid", models: ["cl_meta_ads_by_attribution_window"], desc: "table_exists() custom macro undocumented (hidden dependency)" },
+  { id: 106, sev: "high", scope: "paid", models: ["cl_meta_ads", "cl_meta_ad_sets", "cl_meta_ad_campaigns", "cl_meta_ad_creatives", "cl_meta_custom_conversions"], desc: "5 Fivetran CL models all materialization unspecified (view)" },
+  { id: 117, sev: "high", scope: "paid", models: ["cl_google_ads_ad_stats"], desc: "ad_stats has no deduplication" },
+  { id: 125, sev: "high", scope: "paid", models: ["cl_pinterest_pin_promotion_report"], desc: "Attribution window determined by _dbt_source_relation LIKE" },
+  { id: 127, sev: "high", scope: "paid", models: ["cl_pinterest_pin_promotion_report"], desc: "Video views calc (total - earned = paid) in CL. Business logic" },
+  { id: 130, sev: "high", scope: "paid", models: ["cl_pinterest_pin_promotion"], desc: "creative_type CASE WHEN classification in CL" },
+  { id: 140, sev: "high", scope: "shared", models: ["meta_attribution_windows"], desc: "Meta×Pinterest attribution window pairing logic undocumented" },
+];
+
+const DL_SOURCES = [
+  { connector: "Supermetrics → BigQuery", platform: "Instagram", scope: "organic", pattern: "dl_supermetrics_instagram_business_{CLIENT}", tables: "_MEDIA, _STORY, _MEDIA_HISTORY, _ACCOUNT_FOLLOWERS", feeds: "4 CL models" },
+  { connector: "Supermetrics → BigQuery", platform: "Facebook", scope: "organic", pattern: "dl_supermetrics_facebook_pages_{CLIENT}", tables: "_PAGE, _POST, _REEL", feeds: "3 CL models" },
+  { connector: "Supermetrics → BigQuery", platform: "TikTok Organic", scope: "organic", pattern: "dl_supermetrics_tiktok_organic_{CLIENT}", tables: "_ACCOUNT_OVERVIEW, _MEDIA_PERFORMANCE", feeds: "2 CL models" },
+  { connector: "Supermetrics → BigQuery", platform: "LinkedIn", scope: "organic", pattern: "dl_supermetrics_linkedin_pages_{CLIENT}", tables: "_PAGE, _PAGE_FOLLOWERS, _POST", feeds: "3 CL models" },
+  { connector: "Google Sheets → Fivetran", platform: "Client Mapping", scope: "shared", pattern: "dl_google_sheets", tables: "accounts, media_data_attributes", feeds: "2 CL models" },
+  { connector: "Fivetran", platform: "Open Exchange Rates", scope: "shared", pattern: "dl_open_exchange_rates", tables: "rate", feeds: "1 CL model" },
+  { connector: "Supermetrics → BigQuery", platform: "Meta Ads", scope: "paid", pattern: "supermetrics_meta_{WINDOW} (×5 windows, ×6 batches)", tables: "FBADS_B{N}_AD_METRICS (up to 30 tables)", feeds: "1 CL model (fan-in)" },
+  { connector: "Fivetran", platform: "Meta Ads (dims)", scope: "paid", pattern: "dl_meta_ads_{CLIENT}", tables: "ad_history, ad_set_history, campaign_history, creative_history, custom_conversion_history", feeds: "5 CL models" },
+  { connector: "Fivetran", platform: "Google Ads", scope: "paid", pattern: "dl_google_ads_{CLIENT}", tables: "ad_history, ad_group_history, ad_stats, campaign_history", feeds: "4 CL models" },
+  { connector: "Fivetran", platform: "Pinterest", scope: "paid", pattern: "dl_pinterest_ads_{CLIENT}_{ATTR}", tables: "ad_group_history, advertiser_history, campaign_history, pin_*, pin_promotion_*", feeds: "7 CL models" },
+  { connector: "Fivetran", platform: "TikTok Ads", scope: "paid", pattern: "dl_tiktok_ads_{CLIENT}", tables: "TIK_B_*_AD (dimensions + metrics)", feeds: "2 CL models" },
+];
+
+const PHASES = [
+  { phase: 1, platform: "IL Layer", why: "Merge current CL + IL into new IL for all 4 organic platforms. Type casting, cleaning, normalization, never-decrease, cross-platform schema unification", models: "~30 new IL models (replaces 12 CL + 18 IL)", effort: "1.5 weeks", layer: "il" },
+  { phase: 2, platform: "stg_OL Layer", why: "If IL merge is not fully achievable, create staging models for complex transformations (boosted mapping, daily changes, etc.). May be skipped.", models: "~5-8 stg_OL models", effort: "0.5-1 week", layer: "stg" },
+  { phase: 3, platform: "OL Layer", why: "Rebuild business objects: posts, accounts, metrics. Enforce 1 model = 1 object. Fix v2/v3 coexistence, layer skips", models: "~8 OL models", effort: "1 week", layer: "ol" },
+  { phase: 4, platform: "BL Layer", why: "New BL referencing only new OL. Post-level + account-level KPIs", models: "2 BL models", effort: "0.5 week", layer: "bl" },
+  { phase: 5, platform: "AL Layer (if needed)", why: "Attribution logic extracted from ol_post_paid_metrics_totals_v3. Coordinate with Aly", models: "1-2 AL models", effort: "0.5 week", layer: "al" },
+  { phase: 6, platform: "Validation & Cutover", why: "Compare old vs new BL output row-by-row. Dashboard migration to new models", models: "Testing + docs", effort: "1 week", layer: "val" },
+];
+
+function Badge({ children, color, bg }) {
+  return <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 10, background: bg, color, whiteSpace: "nowrap" }}>{children}</span>;
+}
+
+function ScopeDot({ scope }) {
+  const c = SCOPE_COLORS[scope];
+  return <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: c.text }}>
+    <span style={{ width: 8, height: 8, borderRadius: "50%", background: c.dot, display: "inline-block" }} />
+    {scope}
+  </span>;
+}
+
+function Card({ children, style }) {
+  return <div style={{ background: "var(--color-bg-secondary, #f8fafc)", border: "1px solid var(--color-border-secondary, #e2e8f0)", borderRadius: 10, padding: 16, marginBottom: 12, ...style }}>{children}</div>;
+}
+
+function StatCard({ label, value, sub }) {
+  return <div style={{ textAlign: "center", padding: "12px 8px" }}>
+    <div style={{ fontSize: 28, fontWeight: 800, color: "var(--color-text-primary, #0f172a)" }}>{value}</div>
+    <div style={{ fontSize: 12, fontWeight: 600, color: "var(--color-text-secondary, #64748b)", marginTop: 2 }}>{label}</div>
+    {sub && <div style={{ fontSize: 11, color: "var(--color-text-tertiary, #94a3b8)", marginTop: 2 }}>{sub}</div>}
+  </div>;
+}
+
+function App() {
+  const [section, setSection] = useState("overview");
+  const [issueFilter, setIssueFilter] = useState("all");
+  const [scopeFilter, setScopeFilter] = useState("all");
+  const [expandedIssue, setExpandedIssue] = useState(null);
+  const [hoveredModel, setHoveredModel] = useState(null);
+
+  const filteredIssues = useMemo(() => {
+    return ISSUES.filter(i => {
+      if (issueFilter !== "all" && i.sev !== issueFilter) return false;
+      if (scopeFilter !== "all" && i.scope !== scopeFilter) return false;
+      return true;
+    });
+  }, [issueFilter, scopeFilter]);
+
+  const navStyle = (s) => ({
+    padding: "8px 14px", borderRadius: 8, fontSize: 12, fontWeight: section === s ? 700 : 500,
+    background: section === s ? "var(--color-bg-accent, #3b82f6)" : "transparent",
+    color: section === s ? "#fff" : "var(--color-text-secondary, #64748b)",
+    border: "none", cursor: "pointer", transition: "all 0.15s"
+  });
+
+  return (
+    <div style={{ fontFamily: "'Inter', system-ui, sans-serif", maxWidth: 900, margin: "0 auto", color: "var(--color-text-primary, #0f172a)" }}>
+      {/* Header */}
+      <div style={{ marginBottom: 20 }}>
+        <h1 style={{ fontSize: 22, fontWeight: 800, margin: "0 0 4px" }}>Organic Model: Analysis & Strategy</h1>
+        <p style={{ fontSize: 12, color: "var(--color-text-secondary, #64748b)", margin: 0 }}>
+          80 models analyzed  ·  143 issues found  ·  Last verified 2026-05-21
+        </p>
+      </div>
+
+      {/* Nav */}
+      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 20, background: "var(--color-bg-secondary, #f1f5f9)", padding: 4, borderRadius: 10 }}>
+        {SECTIONS.map(s => <button key={s} onClick={() => setSection(s)} style={navStyle(s)}>{SECTION_LABELS[s]}</button>)}
+      </div>
+
+      {/* Overview */}
+      {section === "overview" && <>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 16 }}>
+          <Card><StatCard label="Total Models" value="80" sub="100% analyzed" /></Card>
+          <Card><StatCard label="Issues Found" value="143" sub="15 critical" /></Card>
+          <Card><StatCard label="Organic Scope" value="39" sub="Your ownership" /></Card>
+          <Card><StatCard label="Est. Rebuild" value="~10w" sub="7 phases" /></Card>
+        </div>
+
+        <Card>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Scope Breakdown</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+            {[["organic", 39, "Tara"], ["paid", 28, "Aly"], ["shared", 12, "Joint coordination"]].map(([s, n, d]) =>
+              <div key={s} style={{ padding: 10, borderRadius: 8, background: SCOPE_COLORS[s].bg, border: `1px solid ${SCOPE_COLORS[s].border}40` }}>
+                <div style={{ fontSize: 20, fontWeight: 800, color: SCOPE_COLORS[s].text }}>{n}</div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: SCOPE_COLORS[s].text, textTransform: "capitalize" }}>{s}</div>
+                <div style={{ fontSize: 10, color: SCOPE_COLORS[s].text + "99", marginTop: 2 }}>{d}</div>
+              </div>
+            )}
+          </div>
+        </Card>
+
+        <Card>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Layer Architecture</div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            {[["DL", "~30 sources", "#f1f5f9"], ["CL", "37 models", "#fef3c7"], ["IL", "24 models", "#dbeafe"], ["OL", "16 models", "#ede9fe"], ["BL", "2 models", "#dcfce7"]].map(([l, c, bg]) =>
+              <div key={l} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{ padding: "8px 14px", borderRadius: 8, background: bg, textAlign: "center", minWidth: 70 }}>
+                  <div style={{ fontSize: 16, fontWeight: 800 }}>{l}</div>
+                  <div style={{ fontSize: 10, color: "#64748b" }}>{c}</div>
+                </div>
+                {l !== "BL" && <span style={{ fontSize: 16, color: "#94a3b8" }}>→</span>}
+              </div>
+            )}
+          </div>
+        </Card>
+
+        <Card>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Paid Interface (Single Bridge)</div>
+          <div style={{ fontSize: 12, lineHeight: 1.6, color: "var(--color-text-secondary, #475569)" }}>
+            Organic BL needs exactly <strong>one bridge</strong> to Paid: <code style={{ fontSize: 11, background: "#f1f5f9", padding: "1px 4px", borderRadius: 3 }}>ol_post_paid_metrics_totals_v3</code>.
+            Whatever Aly changes upstream in the Paid domain, this model's output schema must remain stable. This is the single coordination point.
+          </div>
+        </Card>
+      </>}
+
+      {/* Lineage */}
+      {section === "lineage" && (() => {
+        const layers = [
+          { id: "DL", label: "DL", y: 0, color: "#94a3b8", nodes: [
+            { id: "dl_ig", label: "Supermetrics\nInstagram", scope: "organic", x: 0 },
+            { id: "dl_fb", label: "Supermetrics\nFacebook", scope: "organic", x: 1 },
+            { id: "dl_tt", label: "Supermetrics\nTikTok Org", scope: "organic", x: 2 },
+            { id: "dl_li", label: "Supermetrics\nLinkedIn", scope: "organic", x: 3 },
+            { id: "dl_gs", label: "Google\nSheets", scope: "shared", x: 4 },
+            { id: "dl_fx", label: "Open Exch\nRates", scope: "shared", x: 5 },
+            { id: "dl_meta", label: "Meta Ads\n(SM+FT)", scope: "paid", x: 6 },
+            { id: "dl_goog", label: "Google\nAds (FT)", scope: "paid", x: 7 },
+            { id: "dl_pin", label: "Pinterest\n(FT)", scope: "paid", x: 8 },
+            { id: "dl_ttad", label: "TikTok\nAds (FT)", scope: "paid", x: 9 },
+          ]},
+          { id: "CL", label: "CL", y: 1, color: "#f59e0b", nodes: [
+            { id: "cl_ig", label: "IG CL\n(4)", scope: "organic", x: 0 },
+            { id: "cl_fb", label: "FB CL\n(3)", scope: "organic", x: 1 },
+            { id: "cl_tt", label: "TT Org CL\n(2)", scope: "organic", x: 2 },
+            { id: "cl_li", label: "LI CL\n(3)", scope: "organic", x: 3 },
+            { id: "cl_gs", label: "Sheets CL\n(2)", scope: "shared", x: 4 },
+            { id: "cl_fx", label: "Currency\n(1)", scope: "shared", x: 5 },
+            { id: "cl_meta", label: "Meta CL\n(7)", scope: "paid", x: 6 },
+            { id: "cl_goog", label: "Google CL\n(4)", scope: "paid", x: 7 },
+            { id: "cl_pin", label: "Pinterest CL\n(7)", scope: "paid", x: 8 },
+            { id: "cl_ttad", label: "TT Ads CL\n(2)", scope: "paid", x: 9 },
+          ]},
+          { id: "IL", label: "IL", y: 2, color: "#3b82f6", nodes: [
+            { id: "il_ig_media", label: "IG Media IL\n(4: v2/v3)", scope: "organic", x: 0 },
+            { id: "il_ig_acc", label: "IG Acc IL\n(1)", scope: "organic", x: 0.7 },
+            { id: "il_fb_media", label: "FB Media IL\n(2: classic/v3)", scope: "organic", x: 1.4 },
+            { id: "il_fb_acc", label: "FB Acc IL\n(1)", scope: "organic", x: 2 },
+            { id: "il_tt_media", label: "TT Media IL\n(2: v2/v3)", scope: "organic", x: 2.6 },
+            { id: "il_tt_acc", label: "TT Acc IL\n(1)", scope: "organic", x: 3.2 },
+            { id: "il_li", label: "LI IL\n(3)", scope: "organic", x: 3.8 },
+            { id: "il_boost", label: "Boosted\nMapping (3)", scope: "organic", x: 4.6 },
+            { id: "il_dim", label: "Dim CL\n(2)", scope: "shared", x: 5.4 },
+            { id: "il_ads", label: "Ads IL\n(6)", scope: "paid", x: 7.5 },
+          ]},
+          { id: "OL", label: "OL", y: 3, color: "#8b5cf6", nodes: [
+            { id: "ol_posts", label: "ol_posts_v3", scope: "organic", x: 1 },
+            { id: "ol_totals", label: "ol_metrics\n_totals_v3", scope: "organic", x: 2.2 },
+            { id: "ol_daily", label: "ol_daily\n_changes_v3", scope: "organic", x: 3.2 },
+            { id: "ol_acc", label: "ol_accounts\n_v2", scope: "organic", x: 4.2, issue: true },
+            { id: "ol_acc_met", label: "ol_acc_metrics\n_v2", scope: "organic", x: 5.4, issue: true },
+            { id: "ol_boost", label: "ol_boosted\n_mapping", scope: "organic", x: 0 },
+            { id: "ol_paid", label: "ol_paid\n_totals_v3", scope: "organic", x: 6.5 },
+            { id: "ol_clients", label: "ol_clients\n(3 models)", scope: "shared", x: 7.8 },
+            { id: "ol_ads", label: "Ads OL\n(4)", scope: "paid", x: 9 },
+          ]},
+          { id: "BL", label: "BL", y: 4, color: "#059669", nodes: [
+            { id: "bl_perf", label: "bl_organic\n_performance_v3", scope: "organic", x: 3 },
+            { id: "bl_acc", label: "bl_organic_account\n_performance_v3", scope: "organic", x: 6 },
+          ]},
+        ];
+
+        const edges = [
+          ["dl_ig","cl_ig"],["dl_fb","cl_fb"],["dl_tt","cl_tt"],["dl_li","cl_li"],["dl_gs","cl_gs"],["dl_fx","cl_fx"],
+          ["dl_meta","cl_meta"],["dl_goog","cl_goog"],["dl_pin","cl_pin"],["dl_ttad","cl_ttad"],
+          ["cl_ig","il_ig_media"],["cl_ig","il_ig_acc"],["cl_fb","il_fb_media"],["cl_fb","il_fb_acc"],
+          ["cl_tt","il_tt_media"],["cl_tt","il_tt_acc"],["cl_li","il_li"],
+          ["cl_ig","il_boost"],["cl_fb","il_boost"],["cl_tt","il_boost"],
+          ["cl_meta","il_ads"],["cl_goog","il_ads"],["cl_pin","il_ads"],["cl_ttad","il_ads"],
+          ["il_ig_media","ol_posts"],["il_fb_media","ol_posts"],["il_tt_media","ol_posts"],["il_li","ol_posts"],
+          ["il_ig_media","ol_totals"],["il_fb_media","ol_totals"],["il_tt_media","ol_totals"],["il_li","ol_totals"],
+          ["ol_totals","ol_daily"],
+          ["il_ig_acc","ol_acc"],["il_fb_acc","ol_acc"],["il_tt_acc","ol_acc"],["il_li","ol_acc"],
+          ["il_ig_acc","ol_acc_met"],["il_fb_acc","ol_acc_met"],["il_tt_acc","ol_acc_met"],["il_li","ol_acc_met"],
+          ["il_boost","ol_boost"],["ol_boost","ol_totals"],["ol_boost","ol_paid"],
+          ["il_ads","ol_ads"],["ol_ads","ol_paid"],
+          ["cl_gs","ol_posts"],
+          ["cl_gs","ol_clients"],["cl_fx","ol_clients"],
+          ["ol_daily","bl_perf"],["ol_posts","bl_perf"],["ol_acc","bl_perf"],["ol_acc_met","bl_perf"],
+          ["ol_paid","bl_perf"],["ol_clients","bl_perf"],
+          ["ol_daily","bl_acc"],["ol_posts","bl_acc"],["ol_acc","bl_acc"],["ol_acc_met","bl_acc"],
+          ["ol_clients","bl_acc"],
+        ];
+
+        const nodeMap = {};
+        layers.forEach(layer => layer.nodes.forEach(n => { nodeMap[n.id] = { ...n, layerY: layer.y }; }));
+
+        const W = 880, layerH = 100, padTop = 45, padLeft = 20, nodeW = 76, nodeH = 38;
+        const getX = (x) => padLeft + x * (W - padLeft * 2 - nodeW) / 9.5;
+        const getY = (ly) => padTop + ly * layerH;
+
+        const highlighted = hoveredModel ? new Set(
+          edges.filter(([a,b]) => a === hoveredModel || b === hoveredModel).flatMap(e => e)
+        ) : null;
+
+        return <>
+          <div style={{ fontSize: 11, color: "var(--color-text-secondary, #64748b)", marginBottom: 8 }}>
+            Hover over any node to highlight its connections. <span style={{ display: "inline-flex", gap: 8, marginLeft: 8 }}>
+              {Object.entries(SCOPE_COLORS).map(([s, c]) => <span key={s} style={{ display: "inline-flex", alignItems: "center", gap: 3 }}><span style={{ width: 8, height: 8, borderRadius: 2, background: c.bg, border: `1px solid ${c.border}`, display: "inline-block" }}/>{s}</span>)}
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}><span style={{ width: 8, height: 8, borderRadius: 2, background: "#fef2f2", border: "1.5px solid #dc2626", display: "inline-block" }}/>issue</span>
+            </span>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <svg width={W} height={padTop + 5 * layerH + 10} style={{ display: "block" }}>
+              {/* Layer labels */}
+              {layers.map(l => (
+                <g key={l.id}>
+                  <rect x={0} y={getY(l.y) - 8} width={W} height={layerH - 4} rx={6} fill={l.color + "08"} stroke={l.color + "20"} strokeWidth={1} />
+                  <text x={W - 10} y={getY(l.y) + 8} textAnchor="end" fontSize={11} fontWeight={800} fill={l.color + "80"}>{l.id}</text>
+                </g>
+              ))}
+              {/* Edges */}
+              {edges.map(([fromId, toId], i) => {
+                const from = nodeMap[fromId], to = nodeMap[toId];
+                if (!from || !to) return null;
+                const x1 = getX(from.x) + nodeW/2, y1 = getY(from.layerY) + nodeH;
+                const x2 = getX(to.x) + nodeW/2, y2 = getY(to.layerY);
+                const isLayerSkip = fromId.startsWith("cl_") && toId.startsWith("ol_");
+                const active = !highlighted || (highlighted.has(fromId) && highlighted.has(toId));
+                return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2}
+                  stroke={isLayerSkip ? "#dc262680" : active ? "#94a3b860" : "#94a3b815"}
+                  strokeWidth={isLayerSkip ? 1.5 : active ? 1 : 0.5}
+                  strokeDasharray={isLayerSkip ? "4 2" : "none"}
+                />;
+              })}
+              {/* Nodes */}
+              {layers.map(layer => layer.nodes.map(n => {
+                const sc = SCOPE_COLORS[n.scope];
+                const x = getX(n.x), y = getY(layer.y);
+                const active = !highlighted || highlighted.has(n.id);
+                const lines = n.label.split("\n");
+                return (
+                  <g key={n.id} onMouseEnter={() => setHoveredModel(n.id)} onMouseLeave={() => setHoveredModel(null)}
+                    style={{ cursor: "pointer", opacity: active ? 1 : 0.2, transition: "opacity 0.15s" }}>
+                    <rect x={x} y={y} width={nodeW} height={nodeH} rx={5}
+                      fill={sc.bg} stroke={n.issue ? "#dc2626" : sc.border} strokeWidth={n.issue ? 2 : 1} />
+                    {lines.map((line, li) => (
+                      <text key={li} x={x + nodeW/2} y={y + 14 + li * 12} textAnchor="middle"
+                        fontSize={lines.length > 1 ? 8 : 9} fontWeight={600} fill={sc.text}>{line}</text>
+                    ))}
+                  </g>
+                );
+              }))}
+              {/* Layer skip annotation */}
+              <text x={getX(4) + nodeW/2} y={getY(2) + nodeH + 46} textAnchor="middle" fontSize={8} fill="#dc2626" fontWeight={700}>LAYER SKIP</text>
+            </svg>
+          </div>
+        </>;
+      })()}
+
+      {/* Data Sources */}
+      {section === "sources" && <>
+        <Card>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Data Layer Sources</div>
+          <div style={{ fontSize: 11, color: "var(--color-text-secondary, #64748b)", marginBottom: 12 }}>
+            Supermetrics creates <strong>one DL table per client</strong> (multi-tenant). CL models use <code>graph.sources</code> dynamic discovery to merge them.
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {DL_SOURCES.map((s, i) => (
+              <div key={i} style={{ padding: 10, borderRadius: 8, background: SCOPE_COLORS[s.scope].bg + "60", border: `1px solid ${SCOPE_COLORS[s.scope].border}30`, fontSize: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                  <div style={{ fontWeight: 700, color: "var(--color-text-primary, #0f172a)" }}>{s.platform}</div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <ScopeDot scope={s.scope} />
+                    <Badge color="#475569" bg="#f1f5f9">{s.feeds}</Badge>
+                  </div>
+                </div>
+                <div style={{ color: "var(--color-text-secondary, #64748b)", fontSize: 11 }}>
+                  <strong>Connector:</strong> {s.connector}<br />
+                  <strong>Pattern:</strong> <code style={{ fontSize: 10, background: "#fff", padding: "0 3px", borderRadius: 2 }}>{s.pattern}</code><br />
+                  <strong>Tables:</strong> {s.tables}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      </>}
+
+      {/* Issues */}
+      {section === "issues" && <>
+        <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+          {["all", "critical", "high"].map(f =>
+            <button key={f} onClick={() => setIssueFilter(f)} style={{
+              padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer",
+              border: `1px solid ${issueFilter === f ? (SEV[f]?.color || "#3b82f6") : "#d1d5db"}`,
+              background: issueFilter === f ? (SEV[f]?.bg || "#eff6ff") : "transparent",
+              color: issueFilter === f ? (SEV[f]?.color || "#1e40af") : "#64748b"
+            }}>{f === "all" ? `All (${ISSUES.length})` : `${SEV[f].label} (${ISSUES.filter(i => i.sev === f).length})`}</button>
+          )}
+          <span style={{ borderLeft: "1px solid #d1d5db", margin: "0 4px" }} />
+          {["all", "organic", "paid", "shared"].map(f =>
+            <button key={f} onClick={() => setScopeFilter(f)} style={{
+              padding: "5px 10px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer",
+              border: `1px solid ${scopeFilter === f ? (SCOPE_COLORS[f]?.border || "#3b82f6") : "#d1d5db"}`,
+              background: scopeFilter === f ? (SCOPE_COLORS[f]?.bg || "#eff6ff") : "transparent",
+              color: scopeFilter === f ? (SCOPE_COLORS[f]?.text || "#1e40af") : "#64748b"
+            }}>{f === "all" ? "All Scopes" : f}</button>
+          )}
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {filteredIssues.map(issue => {
+            const sev = SEV[issue.sev];
+            const expanded = expandedIssue === issue.id;
+            return (
+              <div key={issue.id} onClick={() => setExpandedIssue(expanded ? null : issue.id)}
+                style={{ padding: "10px 12px", borderRadius: 8, background: sev.bg, border: `1px solid ${sev.color}20`, cursor: "pointer", transition: "all 0.15s" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <Badge color={sev.color} bg={sev.color + "18"}>#{issue.id}</Badge>
+                  <Badge color={sev.color} bg={sev.color + "18"}>{sev.label}</Badge>
+                  <ScopeDot scope={issue.scope} />
+                  <span style={{ fontSize: 12, flex: 1, color: "var(--color-text-primary, #334155)" }}>{issue.desc.split('.')[0]}</span>
+                </div>
+                {expanded && (
+                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${sev.color}15` }}>
+                    <div style={{ fontSize: 12, color: "var(--color-text-secondary, #475569)", marginBottom: 6 }}>{issue.desc}</div>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-secondary, #64748b)", marginBottom: 4 }}>Affected Models:</div>
+                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                      {issue.models.map(m => <code key={m} style={{ fontSize: 10, background: "#fff", padding: "2px 6px", borderRadius: 4, border: "1px solid #e2e8f0" }}>{m}</code>)}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </>}
+
+      {/* Models */}
+      {section === "models" && <>
+        {[
+          { layer: "BL", count: 2, color: "#dcfce7", models: [
+            { name: "bl_organic_performance_v3", scope: "organic", mat: "table", desc: "Post-level KPIs → dashboards" },
+            { name: "bl_organic_account_performance_v3", scope: "organic", mat: "table", desc: "Account-level KPIs → dashboards" }
+          ]},
+          { layer: "OL", count: 16, color: "#ede9fe", models: [
+            { name: "ol_posts_v3", scope: "organic", mat: "unknown", desc: "Post master. Layer skip (#3)" },
+            { name: "ol_posts_v2", scope: "organic", mat: "unknown", desc: "Deprecated, still referenced (#1)" },
+            { name: "ol_post_organic_metrics_totals_v3", scope: "organic", mat: "table", desc: "Cumulative KPIs. table+incremental contradiction (#4)" },
+            { name: "ol_post_organic_metrics_daily_changes_v3", scope: "organic", mat: "table", desc: "Daily deltas. Missing unique_key" },
+            { name: "ol_organic_accounts_v2", scope: "organic", mat: "table", desc: "Account master. v2 in v3 BL (#2)" },
+            { name: "ol_organic_account_metrics_v2", scope: "organic", mat: "table", desc: "Account KPIs. v2+refs posts_v2 (#2)" },
+            { name: "ol_organic_boosted_mapping", scope: "organic", mat: "table", desc: "Organic↔Paid mapping. OK" },
+            { name: "ol_post_paid_metrics_totals_v3", scope: "organic", mat: "table", desc: "Paid bridge. Hardcoded filters (#6)" },
+            { name: "ol_ads_supermetrics", scope: "paid", mat: "table", desc: "Ad dim + business logic (#9)" },
+            { name: "ol_ad_metrics_supermetrics", scope: "paid", mat: "table", desc: "Central hub 488 lines (#41)" },
+            { name: "ol_clients", scope: "shared", mat: "unspec", desc: "Client dim. Reads CL directly (#3)" },
+            { name: "ol_client_projects", scope: "shared", mat: "unspec", desc: "Project dim. Reads CL directly" },
+            { name: "ol_platform_accounts", scope: "shared", mat: "unspec", desc: "Account mapping. Reads CL directly" },
+            { name: "ol_daily_currency_exchange_rates", scope: "shared", mat: "unspec", desc: "Currency. Cutoff 2024-08-08 (#12)" },
+            { name: "ol_ad_sets_supermetrics", scope: "paid", mat: "unspec", desc: "Ad set dim. Dual-source (#8)" },
+            { name: "ol_ad_campaigns_supermetrics", scope: "paid", mat: "unspec", desc: "Campaign dim. Dual-source (#8)" },
+          ]},
+        ].map(layer => (
+          <Card key={layer.layer} style={{ background: layer.color + "30" }}>
+            <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 8 }}>{layer.layer} Layer ({layer.count} models)</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {layer.models.map(m => (
+                <div key={m.name} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 6, background: SCOPE_COLORS[m.scope].bg + "60", fontSize: 12 }}>
+                  <ScopeDot scope={m.scope} />
+                  <code style={{ fontSize: 11, fontWeight: 600, minWidth: 280 }}>{m.name}</code>
+                  <Badge color="#475569" bg="#f1f5f9">{m.mat}</Badge>
+                  <span style={{ color: "var(--color-text-secondary, #64748b)", fontSize: 11 }}>{m.desc}</span>
+                </div>
+              ))}
+            </div>
+          </Card>
+        ))}
+        <Card style={{ background: "#dbeafe30" }}>
+          <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 8 }}>IL Layer (24 models)</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+            {[
+              { name: "il_instagram_business_account_followers_v2", scope: "organic", mat: "active", desc: "IG follower counts" },
+              { name: "il_instagram_business_media_classic_v3", scope: "organic", mat: "active", desc: "IG posts: cumulative + never-decrease" },
+              { name: "il_instagram_business_media_classic_v2", scope: "organic", mat: "deprecated", desc: "Deprecated (v3 exists)" },
+              { name: "il_instagram_business_media_stories_v3", scope: "organic", mat: "active", desc: "IG stories. IL→IL dep (#15)" },
+              { name: "il_instagram_business_media_stories_v2", scope: "organic", mat: "deprecated", desc: "Deprecated (v3 exists)" },
+              { name: "il_instagram_business_media_history", scope: "organic", mat: "active", desc: "IG lifetime totals" },
+              { name: "il_instagram_boosted_mapping", scope: "organic", mat: "active", desc: "IG organic↔paid mapping" },
+              { name: "il_facebook_pages_account_basics", scope: "organic", mat: "active", desc: "FB page basics" },
+              { name: "il_facebook_pages_media_classic_v3", scope: "organic", mat: "active", desc: "FB posts + reels combined" },
+              { name: "il_facebook_pages_media_classic", scope: "organic", mat: "deprecated", desc: "No version suffix (v3 exists)" },
+              { name: "il_facebook_pages_boosted_mapping", scope: "organic", mat: "active", desc: "FB boosted. Copy-paste tag error (#26)" },
+              { name: "il_tiktok_organic_account_overview_v2", scope: "organic", mat: "active", desc: "TikTok account overview" },
+              { name: "il_tiktok_organic_media_classic_v3", scope: "organic", mat: "active", desc: "TikTok posts. Refs v2! (#14)" },
+              { name: "il_tiktok_organic_media_classic_v2", scope: "organic", mat: "deprecated", desc: "Deprecated but v3 depends on it!" },
+              { name: "il_tiktok_organic_boosted_mapping", scope: "organic", mat: "active", desc: "TikTok boosted mapping" },
+              { name: "il_linkedin_pages_account_basics", scope: "organic", mat: "active", desc: "Near-passthrough (#32)" },
+              { name: "il_linkedin_pages_account_followers", scope: "organic", mat: "active", desc: "Separate from basics (unique to LI, #30)" },
+              { name: "il_linkedin_pages_media_posts", scope: "organic", mat: "active", desc: "v2-style IL, total_ prefix (#28, #29)" },
+              { name: "il_ad_metrics_meta_supermetrics", scope: "paid", mat: "active", desc: "Meta ads metrics (Supermetrics)" },
+              { name: "il_ad_metrics_meta_supermetrics_backfill", scope: "paid", mat: "active", desc: "Schema-only, hidden post-hook (#36, #40)" },
+              { name: "il_ad_metrics_meta_supermetrics_unified", scope: "paid", mat: "active", desc: "Unified Meta metrics" },
+              { name: "il_ad_metrics_google_ads", scope: "paid", mat: "active", desc: "Google Ads. NULL placeholders (#43)" },
+              { name: "il_ad_metrics_pinterest", scope: "paid", mat: "active", desc: "Pinterest. NULL placeholders (#38)" },
+              { name: "il_ad_metrics_tiktok_supermetrics", scope: "paid", mat: "active", desc: "TikTok Ads. Platform hardcoded (#37)" },
+            ].map(m => (
+              <div key={m.name} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", borderRadius: 6, background: SCOPE_COLORS[m.scope].bg + "40", fontSize: 11, opacity: m.mat === "deprecated" ? 0.6 : 1, textDecoration: m.mat === "deprecated" ? "line-through" : "none" }}>
+                <ScopeDot scope={m.scope} />
+                <code style={{ fontWeight: 600, minWidth: 290, fontSize: 10 }}>{m.name}</code>
+                <Badge color={m.mat === "deprecated" ? "#dc2626" : "#059669"} bg={m.mat === "deprecated" ? "#fef2f2" : "#ecfdf5"}>{m.mat}</Badge>
+                <span style={{ color: "var(--color-text-secondary, #64748b)", fontSize: 10 }}>{m.desc}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+        <Card style={{ background: "#fef3c720" }}>
+          <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 4 }}>CL Layer (37 models)</div>
+          <div style={{ fontSize: 10, color: "var(--color-text-tertiary, #94a3b8)", marginBottom: 8 }}>Organic CL = table materialization. All Paid/Shared CL = view (unspecified). All use graph.sources discovery except Dimensions and Currency.</div>
+          {[
+            { group: "Instagram (4)", scope: "organic", models: [
+              { name: "cl_instagram_business_account_followers", mat: "table", desc: "Missing tags, column_override (#63, #65)" },
+              { name: "cl_instagram_business_media_classic", mat: "table", desc: "graph.sources + column_override INT64" },
+              { name: "cl_instagram_business_media_history_new", mat: "table", desc: "_new suffix (#57), UPPERCASE cols (#62), no WHERE (#64)" },
+              { name: "cl_instagram_business_media_stories", mat: "table", desc: "Empty schema fallback (#61)" },
+            ]},
+            { group: "Facebook (3)", scope: "organic", models: [
+              { name: "cl_facebook_pages_account_basics", mat: "table", desc: "Partition by published_date (#71)" },
+              { name: "cl_facebook_pages_media_posts", mat: "table", desc: "Paid/organic split (#66), bd_reach error (#67)" },
+              { name: "cl_facebook_pages_media_reels", mat: "table", desc: "total_reactions SUM (#68), semantic stretch (#70)" },
+            ]},
+            { group: "TikTok Organic (2)", scope: "organic", models: [
+              { name: "cl_tiktok_organic_account_overview", mat: "table", desc: "flexible_tiktok_field macro (#76)" },
+              { name: "cl_tiktok_organic_media_performance", mat: "table", desc: "report_date=yesterday (#78)" },
+            ]},
+            { group: "TikTok Ads (2)", scope: "paid", models: [
+              { name: "cl_tiktok_ads_dimensions", mat: "table", desc: "PII exposed (#83)" },
+              { name: "cl_tiktok_ads_metrics", mat: "table", desc: "60+ unused total_* cols (#80)" },
+            ]},
+            { group: "LinkedIn (3)", scope: "organic", models: [
+              { name: "cl_linkedin_pages_account_basics", mat: "table", desc: "total_daily_* prefix (#85), partition inconsistency (#86)" },
+              { name: "cl_linkedin_pages_account_followers", mat: "table", desc: "followers_paid dropped (#87), data_source_name missing (#88)" },
+              { name: "cl_linkedin_pages_media_posts", mat: "table", desc: "engagement_rate passthrough (#89), day_of_week in CL (#90)" },
+            ]},
+            { group: "Meta Ads Supermetrics (1)", scope: "paid", models: [
+              { name: "cl_meta_ads_by_attribution_window", mat: "view!", desc: "30-source UNION ALL as VIEW (#96), attribution hardcoded (#97)" },
+            ]},
+            { group: "Meta Ads Fivetran (5)", scope: "paid", models: [
+              { name: "cl_meta_ads", mat: "view", desc: "include list. dl_ga copy-paste (#107)" },
+              { name: "cl_meta_ad_sets", mat: "view", desc: "75+ column exclude list. Fragile (#108)" },
+              { name: "cl_meta_ad_campaigns", mat: "view", desc: "No include/exclude. updated_time not renamed (#110)" },
+              { name: "cl_meta_ad_creatives", mat: "view", desc: "source_instagram_media_id = organic-paid link" },
+              { name: "cl_meta_custom_conversions", mat: "view", desc: "MAX(account_id) data repair (#112), composite key (#111)" },
+            ]},
+            { group: "Google Ads (4)", scope: "paid", models: [
+              { name: "cl_google_ads_ad", mat: "view", desc: "ARRAY output (#120), no platform_account_id (#121)" },
+              { name: "cl_google_ads_ad_group", mat: "view", desc: "Clean model" },
+              { name: "cl_google_ads_ad_stats", mat: "view", desc: "clicks double output (#115), conversions≠purchases (#116), no dedup (#117)" },
+              { name: "cl_google_ads_campaign", mat: "view", desc: "Cleanest model" },
+            ]},
+            { group: "Pinterest (7)", scope: "paid", models: [
+              { name: "cl_pinterest_ad_group", mat: "view", desc: "No platform column" },
+              { name: "cl_pinterest_advertiser", mat: "view", desc: "4 cols only. Has currency" },
+              { name: "cl_pinterest_campaign", mat: "view", desc: "'Pinterest Ads' platform" },
+              { name: "cl_pinterest_pin", mat: "view", desc: "NULL AS image_url placeholder (#134)" },
+              { name: "cl_pinterest_pin_media_image", mat: "view", desc: "Separate image table" },
+              { name: "cl_pinterest_pin_promotion", mat: "view", desc: "'Pinterest' platform (#129), creative_type CASE (#130)" },
+              { name: "cl_pinterest_pin_promotion_report", mat: "view", desc: "clicks double (#124), dedup ignores window (#128), video calc (#127)" },
+            ]},
+            { group: "Google Sheets (2)", scope: "shared", models: [
+              { name: "cl_google_sheets_accounts", mat: "view", desc: "ID generation in CL (#45), fragile name-based (#46)" },
+              { name: "cl_google_sheets_media_data_attributes", mat: "no config", desc: "German→English rename (#49, #50)" },
+            ]},
+            { group: "Dimensions (2)", scope: "shared", models: [
+              { name: "cl_dim_campaign_objective_mapping", mat: "no config", desc: "Pure passthrough SELECT * (#53)" },
+              { name: "cl_dim_conversion_goal_mapping", mat: "no config", desc: "Pure passthrough (#53)" },
+            ]},
+            { group: "Currency (1)", scope: "shared", models: [
+              { name: "cl_open_exchange_rates_rate", mat: "no config", desc: "RANK() not ROW_NUMBER (#137), no currency_code in partition (#138)" },
+            ]},
+          ].map(g => (
+            <div key={g.group} style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 3, display: "flex", alignItems: "center", gap: 6 }}>
+                {g.group} <ScopeDot scope={g.scope} />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                {g.models.map(m => (
+                  <div key={m.name} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", borderRadius: 5, background: SCOPE_COLORS[g.scope].bg + "30", fontSize: 11 }}>
+                    <code style={{ fontWeight: 600, minWidth: 280, fontSize: 10 }}>{m.name}</code>
+                    <Badge color={m.mat.includes("view") || m.mat === "no config" ? "#d97706" : "#059669"} bg={m.mat.includes("view") || m.mat === "no config" ? "#fffbeb" : "#ecfdf5"}>{m.mat}</Badge>
+                    <span style={{ color: "var(--color-text-secondary, #64748b)", fontSize: 10 }}>{m.desc}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </Card>
+        <Card style={{ background: "#f1f5f920" }}>
+          <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 4 }}>META Layer (1 model)</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", borderRadius: 5, background: "#f1f5f9", fontSize: 11 }}>
+            <ScopeDot scope="shared" />
+            <code style={{ fontWeight: 600, minWidth: 280, fontSize: 10 }}>meta_attribution_windows</code>
+            <Badge color="#d97706" bg="#fffbeb">no config</Badge>
+            <span style={{ color: "var(--color-text-secondary, #64748b)", fontSize: 10 }}>Seed-as-SQL. 11 rows. Only 1 used in OL (#142). Meta×Pinterest pairing undocumented (#140)</span>
+          </div>
+        </Card>
+      </>}
+
+      {/* Patterns */}
+      {section === "patterns" && <>
+        {[
+          { id: 1, name: "Layer Skip (OL → CL)", count: "15+", desc: "IL layer was never built for many domains. CL absorbed IL responsibilities.", instances: "Client hierarchy (3), Google Sheets, Pinterest, Google Ads, TikTok Ads, Currency" },
+          { id: 2, name: "graph.sources Dynamic Discovery", count: "All CL", desc: "Supermetrics creates one DL table per client. Pattern hides actual source list from dbt lineage.", instances: "IG (4), FB (3), TT (2), LI (3), Meta (7), Google (4), Pinterest (7)" },
+          { id: 3, name: "total_ Prefix Inconsistency", count: "LinkedIn only", desc: "LinkedIn CL adds total_daily_* prefix. All other platforms don't. Causes manual aliasing in OL.", instances: "cl_linkedin_pages_* → il_linkedin_pages_* → OL remap" },
+          { id: 6, name: "Missing dbt Configs", count: "29+ models", desc: "No materialization, tags, or unique_key. 23/37 CL models are views.", instances: "All Paid CL (23), 6 OL models, meta_attribution_windows" },
+          { id: 7, name: "Materialization Absence", count: "23/37 CL", desc: "Only Organic CL (14) has table materialization. Ads CL runs as view including 30-source UNION ALL.", instances: "Meta (7), Google (4), Pinterest (7), Dims (2), Sheets (2), Currency (1)" },
+          { id: 8, name: "clicks = link_clicks Double Output", count: "2 platforms", desc: "Google + Pinterest copy same source column to two output columns. Meta has separate sources.", instances: "cl_google_ads_ad_stats, cl_pinterest_pin_promotion_report" },
+          { id: 9, name: "creative_type Classification Spread", count: "3 layers", desc: "Same concept classified in different layers per platform.", instances: "Meta=OL (CASE WHEN 20+), Pinterest=CL (CASE WHEN), Google=DL (API)" },
+        ].map(p => (
+          <Card key={p.id}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <span style={{ fontSize: 13, fontWeight: 700 }}>Pattern {p.id}: {p.name}</span>
+              <Badge color="#6b21a8" bg="#f3e8ff">{p.count}</Badge>
+            </div>
+            <div style={{ fontSize: 12, color: "var(--color-text-secondary, #475569)", marginBottom: 4 }}>{p.desc}</div>
+            <div style={{ fontSize: 11, color: "var(--color-text-tertiary, #94a3b8)" }}>Instances: {p.instances}</div>
+          </Card>
+        ))}
+      </>}
+
+      {/* Strategy */}
+      {section === "strategy" && <>
+        <Card>
+          <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 4 }}>Rebuild Approach: Layer-by-Layer, Bottom-Up</div>
+          <div style={{ fontSize: 11, color: "var(--color-text-secondary, #64748b)", marginBottom: 10 }}>Build each layer completely across all 4 platforms before moving to the next. This ensures interface consistency and avoids back-and-forth.</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {PHASES.map(p => {
+              const layerColors = { il: "#3b82f6", stg: "#f59e0b", ol: "#8b5cf6", bl: "#059669", al: "#06b6d4", val: "#64748b" };
+              const layerBg = { il: "#dbeafe40", stg: "#fef3c740", ol: "#ede9fe40", bl: "#dcfce740", al: "#cffafe40", val: "#f1f5f940" };
+              return (
+              <div key={p.phase} style={{
+                display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 8,
+                background: layerBg[p.layer], border: `1px solid ${layerColors[p.layer]}20`
+              }}>
+                <div style={{ width: 32, height: 32, borderRadius: "50%", background: layerColors[p.layer], display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 800, fontSize: 14, flexShrink: 0 }}>{p.phase}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>{p.platform}</div>
+                  <div style={{ fontSize: 11, color: "var(--color-text-secondary, #64748b)" }}>{p.why}</div>
+                </div>
+                <Badge color="#475569" bg="#f1f5f9">{p.models}</Badge>
+                <Badge color="#059669" bg="#ecfdf5">{p.effort}</Badge>
+              </div>
+            )})}
+          </div>
+          <div style={{ marginTop: 10, fontSize: 11, color: "var(--color-text-tertiary, #94a3b8)" }}>
+            Total estimate: ~5-6 weeks (target: end of June). Phase 2 (stg_OL) may be skipped if CL+IL merge is fully achievable in Phase 1. IL starts next week.
+          </div>
+        </Card>
+
+        <Card>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Key Design Decisions</div>
+          {[
+            ["CL + IL merge?", "Merge into single 'new IL'. If not fully mergeable → stg_OL holds current IL logic"],
+            ["Never-decrease location", "IL only (single location, per v3 pattern)"],
+            ["Daily changes location", "OL only (consistent across platforms)"],
+            ["LinkedIn v3 migration", "Migrate to v3 (consistency across platforms)"],
+            ["Boosted mapping bridge", "Keep but fix hardcoded filters in ol_post_paid_metrics_totals_v3"],
+          ].map(([q, a], i) => (
+            <div key={i} style={{ display: "flex", gap: 8, padding: "6px 0", borderBottom: i < 4 ? "1px solid #f1f5f9" : "none", fontSize: 12 }}>
+              <span style={{ fontWeight: 600, minWidth: 180, color: "var(--color-text-primary, #334155)" }}>{q}</span>
+              <span style={{ color: "var(--color-text-secondary, #64748b)" }}>{a}</span>
+            </div>
+          ))}
+        </Card>
+
+        <Card>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Coordination with Aly (Paid Manager)</div>
+          {[
+            ["Now", "Timeline alignment. Ensure Paid rebuild doesn't break Organic dependencies"],
+            ["Before Phase 5", "Schema contract for ol_post_paid_metrics_totals_v3 output"],
+            ["Before Phase 5", "Agree on ol_clients / ol_client_projects / ol_platform_accounts ownership"],
+            ["Phase 5-6", "Discuss if Attribution Layer (AL) should be joint responsibility"],
+          ].map(([when, what], i) => (
+            <div key={i} style={{ display: "flex", gap: 8, padding: "6px 0", borderBottom: i < 3 ? "1px solid #f1f5f9" : "none", fontSize: 12 }}>
+              <Badge color="#7c3aed" bg="#f3e8ff">{when}</Badge>
+              <span style={{ color: "var(--color-text-secondary, #64748b)" }}>{what}</span>
+            </div>
+          ))}
+        </Card>
+
+        <Card>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Target Architecture (2026 DWH)</div>
+          <div style={{ fontSize: 11, color: "var(--color-text-secondary, #64748b)", marginBottom: 10, lineHeight: 1.5 }}>
+            New IL = prev CL + IL merged (if mergeable). If not mergeable → <strong>stg_ol</strong> = current IL, and OL stays similar to current OL.
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#64748b", marginBottom: 4 }}>CURRENT</div>
+              <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
+                {[["DL", "Sources"], ["CL", "37 models"], ["IL", "24 models"], ["OL", "16 models"], ["BL", "2 models"]].map(([l, d], i) => (
+                  <div key={l} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <div style={{ padding: "5px 10px", borderRadius: 6, background: "#f1f5f9", textAlign: "center", minWidth: 60 }}>
+                      <div style={{ fontWeight: 800, fontSize: 13 }}>{l}</div>
+                      <div style={{ fontSize: 9, color: "#64748b" }}>{d}</div>
+                    </div>
+                    {i < 4 && <span style={{ color: "#94a3b8", fontSize: 14 }}>→</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div style={{ borderTop: "1px dashed #d1d5db", paddingTop: 8 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#059669", marginBottom: 4 }}>TARGET (2026)</div>
+              <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
+                {[
+                  ["DL", "Unified sources", "#f1f5f9"],
+                  ["IL", "prev CL + IL\n(merged)", "#dbeafe"],
+                  ["stg_OL", "prev IL\n(if not merged)", "#fef3c7"],
+                  ["OL", "~same as\ncurrent OL", "#ede9fe"],
+                  ["BL", "SPOT + aggr", "#dcfce7"],
+                  ["AL", "Attribution\n(new)", "#dcfce7"],
+                  ["RL", "Reporting\n(new)", "#dcfce7"]
+                ].map(([l, d, bg], i) => (
+                  <div key={l} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <div style={{ padding: "5px 8px", borderRadius: 6, background: bg, textAlign: "center", minWidth: 60, border: (l === "AL" || l === "RL" || l === "stg_OL") ? "1px dashed #22c55e" : "none" }}>
+                      <div style={{ fontWeight: 800, fontSize: l.length > 3 ? 11 : 13 }}>{l}</div>
+                      <div style={{ fontSize: 8, color: "#64748b", whiteSpace: "pre-line" }}>{d}</div>
+                    </div>
+                    {i < 6 && <span style={{ color: "#94a3b8", fontSize: 14 }}>→</span>}
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: 8, fontSize: 11, color: "var(--color-text-secondary, #64748b)", lineHeight: 1.5 }}>
+                <strong>Option A (preferred):</strong> CL + IL merge into new IL → OL → BL → AL → RL<br/>
+                <strong>Option B (fallback):</strong> CL + IL merge into new IL → stg_OL (=current IL logic) → OL → BL → AL → RL
+              </div>
+            </div>
+          </div>
+        </Card>
+      </>}
+
+      {/* Footer */}
+      <div style={{ marginTop: 20, padding: "12px 0", borderTop: "1px solid var(--color-border-secondary, #e2e8f0)", fontSize: 11, color: "var(--color-text-tertiary, #94a3b8)", display: "flex", justifyContent: "space-between" }}>
+        <span>Source: dbt CLI (2026-05-18) · 73 SQL files reviewed · Target: Architectural_plan.pdf</span>
+        <span>Owner: Tara Hong</span>
+      </div>
+    </div>
+  );
+}
+
+    ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+  </script>
+</body>
+</html>
